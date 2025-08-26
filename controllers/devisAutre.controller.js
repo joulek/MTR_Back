@@ -7,47 +7,88 @@ import { makeTransport } from "../utils/mailer.js";
 const formatDevisNumber = (year, seq) =>
   `DDV${String(year).slice(-2)}${String(seq).padStart(5, "0")}`;
 
+const MAX_FILES = 4;               // ✅ garde-fou back: max 4 fichiers
+const MAX_ATTACH_TOTAL = 15 * 1024 * 1024; // 15MB pour l'email
+
+// petites aides
+const isBlank = (v) => !v || String(v).trim() === "";
+const toStr = (v) => (v == null ? "" : String(v));
+const clean = (v) => toStr(v).trim();
+
 export const createDevisAutre = async (req, res) => {
   try {
     if (!req.user?.id) {
       return res.status(401).json({ success: false, message: "Utilisateur non authentifié" });
     }
 
-    // 🔹 Nouveaux champs du formulaire + compat avec l'ancien (titre/description)
+    // 🔹 Champs acceptés, compat et nouveaux
     const {
-      titre,                // compat historique
-      description,          // compat historique
-      designation,          // "Désignation / Référence *"
-      dimensions,           // "Dimensions principales"
-      quantite,             // "Quantité *"
-      matiere,              // "Matière *"
-      exigences,
-      remarques
-    } = req.body;
+      // legacy (compat)
+      titre,
+      description,
 
-    // Coercitions légères (on ne modifie pas la logique de validation globale)
-    const qte = quantite !== undefined ? Number(quantite) : undefined;
-
-    // 🔹 spec enrichi (on garde titre/description pour compatibilité)
-    const spec = {
-      // compat champs legacy
-      titre: titre || designation || "",
-      description: description || req.body?.["description"] || "",
       // nouveaux champs
-      designation: designation || titre || "",
-      dimensions: dimensions || "",
-      quantite: Number.isFinite(qte) ? qte : undefined,
-      matiere: (matiere || "").toString()
-    };
+      designation,         // "Désignation / Référence *"
+      dimensions,          // "Dimensions principales"
+      quantite,            // "Quantité *"
+      matiere,             // "Matière *" (ou 'Autre')
+      matiereAutre,        // "Autre matière (précisez)"
+      exigences,
+      remarques,
+    } = req.body || {};
 
-    // Fichiers envoyés via multer
-    const documents = (req.files || []).map(f => ({
+    // ✅ validations de base côté serveur
+    const dsg = clean(designation || titre); // on tolère ancien champ pour le required
+    if (isBlank(dsg)) {
+      return res.status(400).json({ success: false, message: "La désignation est requise." });
+    }
+
+    const qRaw = clean(quantite);
+    const qte = Number(qRaw);
+    if (!Number.isFinite(qte) || qte < 1) {
+      return res.status(400).json({ success: false, message: "Quantité invalide (>= 1)." });
+    }
+
+    // ✅ normalisation matière : si 'Autre' ou vide ⇒ utiliser matiereAutre
+    let mat = clean(matiere);
+    const matAutre = clean(matiereAutre);
+    if (isBlank(mat) || /^autre$/i.test(mat)) {
+      if (isBlank(matAutre)) {
+        return res.status(400).json({ success: false, message: "La matière est requise." });
+      }
+      mat = matAutre;
+    }
+
+    // ✅ garde-fou fichiers : max 4
+    const incomingFiles = Array.isArray(req.files) ? req.files : [];
+    if (incomingFiles.length > MAX_FILES) {
+      return res.status(400).json({
+        success: false,
+        message: `Vous pouvez joindre au maximum ${MAX_FILES} fichiers.`,
+      });
+    }
+
+    // Fichiers (stockés en BDD, pas encore en mail)
+    const documents = incomingFiles.map((f) => ({
       filename: f.originalname,
       mimetype: f.mimetype,
-      data: f.buffer
+      size: f.size,
+      data: f.buffer,
     }));
 
-    // Générer numéro unique
+    // 🔹 spec enrichi (et compat champs legacy)
+    const spec = {
+      // Compat legacy: on préfère la désignation comme titre; sinon old titre; sinon fallback
+      titre: clean(titre) || dsg || "Article",
+      description: clean(description) || clean(req.body?.["description"]) || "",
+      designation: dsg,
+      dimensions: clean(dimensions),
+      quantite: qte,
+      matiere: mat,                 // source de vérité BDD
+      matiereAutre: matAutre || "", // conservé informativement
+    };
+
+    // Générer numéro unique par année
     const year = new Date().getFullYear();
     const counterId = `devis:${year}`;
     const c = await Counter.findOneAndUpdate(
@@ -57,21 +98,21 @@ export const createDevisAutre = async (req, res) => {
     ).lean();
     const numero = formatDevisNumber(year, c.seq);
 
-    // Enregistrement rapide en base
+    // Enregistrement
     const devis = await DevisAutre.create({
       numero,
       user: req.user.id,
       type: "autre",
       spec,
-      exigences,
-      remarques,
-      documents
+      exigences: clean(exigences),
+      remarques: clean(remarques),
+      documents,
     });
 
-    // Réponse immédiate au frontend
+    // ✅ Réponse immédiate
     res.status(201).json({ success: true, devisId: devis._id, numero: devis.numero });
 
-    // Traitement PDF + mail en arrière-plan
+    // ----------- PDF + MAIL asynchrones -----------
     setImmediate(async () => {
       const toBuffer = (maybeBinary) => {
         if (!maybeBinary) return null;
@@ -79,7 +120,11 @@ export const createDevisAutre = async (req, res) => {
         if (maybeBinary.buffer && Buffer.isBuffer(maybeBinary.buffer)) {
           return Buffer.from(maybeBinary.buffer);
         }
-        try { return Buffer.from(maybeBinary); } catch { return null; }
+        try {
+          return Buffer.from(maybeBinary);
+        } catch {
+          return null;
+        }
       };
 
       try {
@@ -90,21 +135,21 @@ export const createDevisAutre = async (req, res) => {
         // Génération PDF
         const pdfBuffer = await buildDevisAutrePDF(full);
 
-        // Stockage PDF dans la base
-        await DevisAutre.findByIdAndUpdate(
-          devis._id,
-          { $set: { demandePdf: { data: pdfBuffer, contentType: "application/pdf" } } }
-        );
+        // Stockage PDF
+        await DevisAutre.findByIdAndUpdate(devis._id, {
+          $set: { demandePdf: { data: pdfBuffer, contentType: "application/pdf", size: pdfBuffer?.length || undefined } },
+        });
 
-        // Préparer pièces jointes
-        const attachments = [{
-          filename: `devis-autre-${full._id}.pdf`,
-          content: pdfBuffer,
-          contentType: "application/pdf",
-        }];
+        // Pièces jointes de l'email
+        const attachments = [
+          {
+            filename: `devis-autre-${full._id}.pdf`,
+            content: pdfBuffer,
+            contentType: "application/pdf",
+          },
+        ];
 
         const docs = Array.isArray(full.documents) ? full.documents : [];
-        const MAX_TOTAL = 15 * 1024 * 1024;
         let total = pdfBuffer.length;
 
         for (const doc of docs) {
@@ -114,7 +159,7 @@ export const createDevisAutre = async (req, res) => {
 
           if (!name || name.startsWith("~$")) continue;
           if (!buf || buf.length === 0) continue;
-          if (total + buf.length > MAX_TOTAL) continue;
+          if (total + buf.length > MAX_ATTACH_TOTAL) continue;
 
           attachments.push({ filename: name, content: buf, contentType: type });
           total += buf.length;
@@ -130,17 +175,22 @@ export const createDevisAutre = async (req, res) => {
 
         const human = (n = 0) => {
           const u = ["B", "KB", "MB", "GB"];
-          let i = 0, v = n;
-          while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+          let i = 0,
+            v = n;
+          while (v >= 1024 && i < u.length - 1) {
+            v /= 1024;
+            i++;
+          }
           return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${u[i]}`;
         };
 
         const docsList =
-          attachments.slice(1)
-            .map(a => `- ${a.filename} (${human(a.content.length)})`)
+          attachments
+            .slice(1)
+            .map((a) => `- ${a.filename} (${human(a.content.length)})`)
             .join("\n") || "(aucun document client)";
 
-        // 🔹 Petit récap des champs spec dans l'email
+        // Bloc spec dans l'email
         const specBlockTxt = `
 Détails article
 - Référence: ${full.spec?.designation || full.spec?.titre || "-"}
@@ -213,12 +263,10 @@ ${docsList}
           html: htmlBody,
           attachments,
         });
-
       } catch (err) {
         console.error("Post-send PDF/email failed:", err);
       }
     });
-
   } catch (e) {
     console.error("createDevisAutre:", e);
     res.status(400).json({ success: false, message: e.message || "Données invalides" });
