@@ -20,4 +20,5 @@ export const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
   // (optionnel) filtrer les types si tu veux
   // fileFilter: (_req, file, cb) => cb(null, true),
+  files: 4,
 });
