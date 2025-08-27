@@ -1,3 +1,4 @@
+// models/Devis.js
 import mongoose from "mongoose";
 
 const itemSchema = new mongoose.Schema({
@@ -5,15 +6,23 @@ const itemSchema = new mongoose.Schema({
   designation: String,
   unite: { type: String, default: "U" },
   quantite: { type: Number, required: true },
-  puht: { type: Number, required: true },     // Prix Unitaire HT
-  remisePct: { type: Number, default: 0 },    // % remise
-  tvaPct: { type: Number, default: 19 },      // 0 | 7 | 13 | 19 ...
-  totalHT: Number,                             // calculé
+  puht: { type: Number, required: true },
+  remisePct: { type: Number, default: 0 },
+  tvaPct: { type: Number, default: 19 },
+  totalHT: Number,
+}, { _id:false });
+
+// 🔥 روابط demandes الإضافية للـ devis multi-DDV
+const linkSchema = new mongoose.Schema({
+  id:   { type: mongoose.Schema.Types.ObjectId, ref: "DemandeDevis" },
+  numero: String,
+  type:  String,
 }, { _id:false });
 
 const devisSchema = new mongoose.Schema({
-  numero: { type: String, unique: true, index: true }, // DV2500016…
-  demandeId: { type: mongoose.Schema.Types.ObjectId, ref: "DemandeDevis" },
+  numero: { type: String, unique: true, index: true }, // DV...
+  demandeId: { type: mongoose.Schema.Types.ObjectId, ref: "DemandeDevis" }, // الرابط الرئيسي (الأول)
+  demandeNumero: String, // تسهيل البحث
   client: {
     id: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     nom: String,
@@ -27,12 +36,23 @@ const devisSchema = new mongoose.Schema({
     mtht: Number,
     mtnetht: Number,
     mttva: Number,
-    fodecPct: { type: Number, default: 1 },   // 1%
+    fodecPct: { type: Number, default: 1 },
     mfodec: Number,
     timbre: { type: Number, default: 0 },
     mttc: Number,
   },
-  createdAt: { type: Date, default: Date.now },
+
+  // 👇 جديد
+  meta: {
+    demandes: [linkSchema],     // كل الـ DDV المرتبطين بهذا الـ devis
+    demandeNumero: String,      // compat قديم إن لزم الأمر
+  },
 }, { timestamps: true });
+
+// فهارس للبحث السريع
+devisSchema.index({ demandeId: 1 });
+devisSchema.index({ demandeNumero: 1 });
+devisSchema.index({ "meta.demandes.id": 1 });
+devisSchema.index({ "meta.demandes.numero": 1 });
 
 export default mongoose.model("Devis", devisSchema);

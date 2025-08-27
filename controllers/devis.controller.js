@@ -209,59 +209,107 @@ async function findDemandeAny(demandeId) {
   return null;
 }
 
+// === CRÉER UN DEVIS À PARTIR DE PLUSIEURS DEMANDES (même client) ===
+// controllers/devis.controller.js
 export const createFromDemande = async (req, res) => {
   try {
-    const { demandeId } = req.params;
-    const { articleId, quantite, remisePct = 0, tvaPct = 19, sendEmail = true } = req.body;
+    const { demandeIds = [], lines = [], sendEmail = true } = req.body;
 
-    const result = await findDemandeAny(demandeId);
-    if (!result) return res.status(404).json({ success:false, message:"Demande introuvable" });
-    const { type, doc: demande } = result;
+    if (!Array.isArray(demandeIds) || !demandeIds.length) {
+      return res.status(400).json({ success:false, message:"demandeIds[] requis" });
+    }
+    if (!Array.isArray(lines) || !lines.length) {
+      return res.status(400).json({ success:false, message:"lines[] requises" });
+    }
 
-    const article = await Article.findById(articleId);
-    if (!article) return res.status(404).json({ success:false, message:"Article introuvable" });
+    // 1) Charger toutes les demandes (tous types)
+    const loaded = [];
+    for (const id of demandeIds) {
+      const found = await findDemandeAny(id);
+      if (!found) {
+        return res.status(404).json({ success:false, message:`Demande introuvable: ${id}` });
+      }
+      loaded.push(found);
+    }
 
-    const qte = toNum(quantite || demande.quantite || 1);
-    const puht = toNum(article.prixHT || article.priceHT || 0);
+    // 2) Vérifier même client
+    const firstUserId = (loaded[0].doc?.user?._id || loaded[0].doc?.user)?.toString?.();
+    const sameClient = loaded.every(
+      (f) => ((f.doc?.user?._id || f.doc?.user)?.toString?.()) === firstUserId
+    );
+    if (!sameClient) {
+      return res.status(400).json({ success:false, message:"Toutes les demandes doivent appartenir au même client" });
+    }
+    const demandeUser = loaded[0].doc.user;
 
-    const totalHT = +(qte * puht * (1 - (toNum(remisePct)/100))).toFixed(3);
-    const mtht = totalHT;
+    // 3) Construire les lignes d’articles
+    const itemDocs = [];
+    for (const ln of lines) {
+      const { demandeId, articleId, qty = 1, remisePct = 0, tvaPct = 19 } = ln || {};
+      if (!demandeId || !articleId) {
+        return res.status(400).json({ success:false, message:"Chaque ligne doit contenir demandeId et articleId" });
+      }
+      const art = await Article.findById(articleId);
+      if (!art) {
+        return res.status(404).json({ success:false, message:`Article introuvable pour la demande ${demandeId}` });
+      }
+
+      const qte = toNum(qty || 1);
+      const puht = toNum(art.prixHT || art.priceHT || 0);
+      const remise = toNum(remisePct || 0);
+      const tva = toNum(tvaPct || 0);
+
+      const totalHT = +(qte * puht * (1 - remise / 100)).toFixed(3);
+
+      itemDocs.push({
+        reference: art.reference || "",
+        designation: art.designation || art.name || art.name_fr || "",
+        unite: art.unite || "U",
+        quantite: qte,
+        puht,
+        remisePct: remise,
+        tvaPct: tva,
+        totalHT,
+      });
+    }
+    if (!itemDocs.length) {
+      return res.status(400).json({ success:false, message:"Aucune ligne valide" });
+    }
+
+    // 4) Totaux
+    const mtht = +itemDocs.reduce((s, it) => s + (it.totalHT || 0), 0).toFixed(3);
     const mtnetht = mtht;
-    const mttva = +(mtnetht * (toNum(tvaPct)/100)).toFixed(3);
+    const mttva = +itemDocs.reduce((s, it) => s + (it.totalHT * (toNum(it.tvaPct)/100)), 0).toFixed(3);
     const mfodec = +((mtnetht) * 0.01).toFixed(3);
     const timbre = 0;
     const mttc = +(mtnetht + mttva + mfodec + timbre).toFixed(3);
 
+    // 5) Numéro
     const numero = await nextDevisNumber();
 
+    // 6) Créer le devis (1ère demande = lien principal)
     const devis = await Devis.create({
       numero,
-      demandeId: demande._id,
-      typeDemande: type,
+      demandeId: loaded[0].doc._id,
+      typeDemande: loaded[0].type,
+      demandeNumero: loaded[0].doc.numero,
       client: {
-        id: demande.user?._id,
-        nom: `${demande.user?.prenom || ""} ${demande.user?.nom || ""}`.trim() || demande.user?.email,
-        email: demande.user?.email,
-        adresse: demande.user?.adresse,
-        tel: demande.user?.numTel,
-        codeTVA: demande.user?.company?.matriculeFiscal,
+        id: demandeUser?._id,
+        nom: `${demandeUser?.prenom || ""} ${demandeUser?.nom || ""}`.trim() || demandeUser?.email,
+        email: demandeUser?.email,
+        adresse: demandeUser?.adresse,
+        tel: demandeUser?.numTel,
+        codeTVA: demandeUser?.company?.matriculeFiscal,
       },
-      items: [{
-        reference: article.reference || "",
-        designation: article.designation || article.name || article.name_fr || "",
-        unite: article.unite || "U",
-        quantite: qte,
-        puht,
-        remisePct: toNum(remisePct),
-        tvaPct: toNum(tvaPct),
-        totalHT
-      }],
+      items: itemDocs,
       totaux: { mtht, mtnetht, mttva, fodecPct: 1, mfodec, timbre, mttc },
+      meta: {
+        demandes: loaded.map(x => ({ id: x.doc._id, numero: x.doc.numero, type: x.type })),
+      }
     });
 
     const { filename } = await buildDevisPDF(devis);
 
-    let mailOk = false;
     if (sendEmail && devis.client.email) {
       const transport = makeTransport();
       await transport.sendMail({
@@ -271,23 +319,71 @@ export const createFromDemande = async (req, res) => {
         text: `Bonjour,\nVeuillez trouver ci-joint le devis ${devis.numero}.\nCordialement.`,
         attachments: [{ filename, path: path.resolve(process.cwd(), "storage/devis", filename) }],
       });
-      mailOk = true;
     }
 
-    // 🔗 URL ABSOLUE
     const pdfUrl = `${ORIGIN}/files/devis/${filename}`;
-
-    return res.json({
-      success:true,
-      devis: { _id: devis._id, numero: devis.numero },
-      pdf: pdfUrl,
-      emailSent: mailOk
-    });
+    return res.json({ success:true, devis:{ _id: devis._id, numero: devis.numero }, pdf: pdfUrl });
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ success:false, message:"Erreur création devis" });
+    console.error("createFromDemandes:", e);
+    return res.status(500).json({ success:false, message:"Erreur création devis (multi)" });
   }
 };
+
+
+export async function getByDemandeAdmin(req, res) {
+  try {
+    const { id } = req.params;
+    const numero = (req.query.numero || "").trim();
+
+    // ⚠️ نفتش على الديفي بـ 4 حالات: الرابط الرئيسي، روابط meta، ورقم الـDDV كذلك
+    const q = {
+      $or: [
+        { demandeId: id },
+        { "meta.demandes.id": id },
+        ...(numero
+          ? [{ demandeNumero: numero }, { "meta.demandes.numero": numero }]
+          : []),
+      ],
+    };
+
+    // مهم: بدون projection، و .lean() كافية
+    const devis = await Devis.findOne(q).lean();
+
+    if (!devis) {
+      return res.json({ success: true, exists: false });
+    }
+
+    // حضّر قائمة أرقام الـDDV المرتبطة
+    const demandesMeta = Array.isArray(devis?.meta?.demandes)
+      ? devis.meta.demandes.map((d) => d?.numero).filter(Boolean)
+      : [];
+
+    const demandeNumeros = Array.from(
+      new Set([
+        ...(demandesMeta || []),
+        ...(devis?.demandeNumero ? [devis.demandeNumero] : []),
+      ])
+    );
+
+    // PDF URL (كيما تبني الاسم عندك)
+    const filename = `${devis.numero}.pdf`;
+    const pdf = `${ORIGIN}/files/devis/${filename}`;
+
+    return res.json({
+      success: true,
+      exists: true,
+      devis,              // فيه meta كامل
+      demandeNumeros,     // جاهزة للفرونت
+      pdf,
+    });
+  } catch (e) {
+    console.error("getByDemandeAdmin:", e);
+    return res.status(500).json({ success: false, message: "Erreur serveur" });
+  }
+}
+
+
+
 
 export const getDevisByDemande = async (req, res) => {
   try {

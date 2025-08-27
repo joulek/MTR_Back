@@ -41,13 +41,12 @@ export const getArticleById = async (req, res) => {
 // POST /articles
 export const createArticle = async (req, res) => {
   try {
-    const { reference, designation, prixHT, numeroDevis } = req.body;
+    const { reference, designation, prixHT } = req.body;
 
     const article = new Article({
       reference,
       designation,
-      prixHT,
-      numeroDevis
+      prixHT
     });
 
     await article.save();
@@ -62,11 +61,11 @@ export const createArticle = async (req, res) => {
 // PUT /articles/:id
 export const updateArticle = async (req, res) => {
   try {
-    const { reference, designation, prixHT, numeroDevis } = req.body;
+    const { reference, designation, prixHT } = req.body;
 
     const article = await Article.findByIdAndUpdate(
       req.params.id,
-      { reference, designation, prixHT, numeroDevis },
+      { reference, designation, prixHT },
       { new: true }
     );
 

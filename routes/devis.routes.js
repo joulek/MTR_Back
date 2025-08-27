@@ -6,17 +6,19 @@ import {
   getNextDevisNumberPreview,
   createFromDemande,
   getDevisByDemande,
-  getDevisByDemandeClient
+  getDevisByDemandeClient,getByDemandeAdmin
 } from "../controllers/devis.controller.js";
 
 const router = Router();
 router.get("/client/by-demande/:demandeId", auth, getDevisByDemandeClient);
-router.post("/admin/from-demande/:demandeId", auth, only("admin"), createFromDemande);
+
+router.post("/admin/from-demande", createFromDemande);
 router.get("/admin/next-number/preview", auth, only("admin"), getNextDevisNumberPreview);
 
+router.get("/admin/list", /* requireAdmin, */ getByDemandeAdmin);
 // ✅ Endpoints attendus par le Front
 
-router.get("/admin/by-demande/:demandeId",  auth, only("admin"), getDevisByDemande);
+router.get("/admin/by-demande/:id", getByDemandeAdmin);
 // Utilitaires numéros (optionnels mais utiles)
 router.get("/", getAllDevisNumeros);
 
