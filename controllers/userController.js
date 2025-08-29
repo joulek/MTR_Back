@@ -171,3 +171,38 @@ export const setPassword = async (req, res) => {
     return res.status(500).json({ success:false, message:"Erreur serveur" });
   }
 };
+
+export const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success:false, message:"Paramètres manquants." });
+    }
+    if (String(newPassword).length < 6) {
+      return res.status(400).json({ success:false, message:"Mot de passe trop court." });
+    }
+
+    // utilisateur authentifié via middleware auth -> req.user.id
+    const user = await User.findById(req.user?.id).select("+passwordHash");
+    if (!user) return res.status(404).json({ success:false, message:"Utilisateur introuvable." });
+
+    // vérifier l'ancien mot de passe
+    const ok = await bcrypt.compare(currentPassword, user.passwordHash || "");
+    if (!ok) return res.status(400).json({ success:false, message:"Mot de passe actuel invalide." });
+
+    // enregistrer le nouveau mot de passe
+    const hash = await bcrypt.hash(newPassword, 12);
+    user.passwordHash = hash;
+
+    // Optionnel: invalider un éventuel reset token non utilisé
+    if (user.passwordReset) {
+      user.passwordReset.usedAt = new Date();
+    }
+
+    await user.save();
+    return res.json({ success:true, message:"Mot de passe modifié." });
+  } catch (e) {
+    console.error("changePassword:", e);
+    return res.status(500).json({ success:false, message:"Erreur serveur" });
+  }
+};
