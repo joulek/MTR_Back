@@ -8,14 +8,16 @@ import {
   getDevisByDemande,
   getDevisByDemandeClient,getByDemandeAdmin
 } from "../controllers/devis.controller.js";
-
+import { listDevisCompact } from "../controllers/adminDevis.compact.controller.js";
 const router = Router();
+
+router.get("/devis/list", /*authAdmin,*/ listDevisCompact);
+
 router.get("/client/by-demande/:demandeId", auth, getDevisByDemandeClient);
 
 router.post("/admin/from-demande", createFromDemande);
 router.get("/admin/next-number/preview", auth, only("admin"), getNextDevisNumberPreview);
 
-router.get("/admin/list", /* requireAdmin, */ getByDemandeAdmin);
 // ✅ Endpoints attendus par le Front
 
 router.get("/admin/by-demande/:id", getByDemandeAdmin);

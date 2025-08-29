@@ -328,62 +328,48 @@ export const createFromDemande = async (req, res) => {
     return res.status(500).json({ success:false, message:"Erreur création devis (multi)" });
   }
 };
-
-
+// مستعمل برشة: خليه أخفّ
 export async function getByDemandeAdmin(req, res) {
   try {
     const { id } = req.params;
     const numero = (req.query.numero || "").trim();
 
-    // ⚠️ نفتش على الديفي بـ 4 حالات: الرابط الرئيسي، روابط meta، ورقم الـDDV كذلك
-    const q = {
-      $or: [
-        { demandeId: id },
-        { "meta.demandes.id": id },
-        ...(numero
-          ? [{ demandeNumero: numero }, { "meta.demandes.numero": numero }]
-          : []),
-      ],
-    };
-
-    // مهم: بدون projection، و .lean() كافية
-    const devis = await Devis.findOne(q).lean();
-
-    if (!devis) {
-      return res.json({ success: true, exists: false });
+    const or = [
+      { demandeId: id },
+      { "meta.demandes.id": id }
+    ];
+    if (numero) {
+      or.push({ demandeNumero: numero }, { "meta.demandeNumero": numero }, { "meta.demandes.numero": numero });
     }
 
-    // حضّر قائمة أرقام الـDDV المرتبطة
-    const demandesMeta = Array.isArray(devis?.meta?.demandes)
-      ? devis.meta.demandes.map((d) => d?.numero).filter(Boolean)
-      : [];
+    const devis = await Devis
+      .findOne({ $or: or })
+      .select("numero createdAt demandeNumero meta.demandes client.nom") // projection
+      .lean();
 
-    const demandeNumeros = Array.from(
-      new Set([
-        ...(demandesMeta || []),
-        ...(devis?.demandeNumero ? [devis.demandeNumero] : []),
-      ])
-    );
+    if (!devis) return res.json({ success: true, exists: false });
 
-    // PDF URL (كيما تبني الاسم عندك)
+    const demandeNumeros = Array.from(new Set([
+      devis.demandeNumero,
+      devis?.meta?.demandeNumero,
+      ...(Array.isArray(devis?.meta?.demandes) ? devis.meta.demandes.map(x => x?.numero).filter(Boolean) : [])
+    ].filter(Boolean)));
+
     const filename = `${devis.numero}.pdf`;
     const pdf = `${ORIGIN}/files/devis/${filename}`;
 
     return res.json({
       success: true,
       exists: true,
-      devis,              // فيه meta كامل
-      demandeNumeros,     // جاهزة للفرونت
-      pdf,
+      devis: { _id: devis._id, numero: devis.numero },
+      demandeNumeros,
+      pdf
     });
   } catch (e) {
     console.error("getByDemandeAdmin:", e);
-    return res.status(500).json({ success: false, message: "Erreur serveur" });
+    return res.status(500).json({ success:false, message:"Erreur serveur" });
   }
 }
-
-
-
 
 export const getDevisByDemande = async (req, res) => {
   try {
@@ -391,41 +377,26 @@ export const getDevisByDemande = async (req, res) => {
     const numero = (req.query.numero || "").toString().trim().toUpperCase();
 
     const or = [];
-    // recherche par ObjectId de demande
-    if (mongoose.isValidObjectId(demandeId)) {
-      or.push({ demandeId: new mongoose.Types.ObjectId(demandeId) });
-    }
-    // recherche par numéro de demande si présent
-    if (numero) {
-      or.push({ demandeNumero: numero }, { "meta.demandeNumero": numero });
-    }
+    if (mongoose.isValidObjectId(demandeId)) or.push({ demandeId: new mongoose.Types.ObjectId(demandeId) });
+    if (numero) or.push({ demandeNumero: numero }, { "meta.demandeNumero": numero }, { "meta.demandes.numero": numero });
 
-    if (!or.length) {
-      return res.status(400).json({ success: false, message: "Paramètres manquants" });
-    }
+    if (!or.length) return res.status(400).json({ success:false, message:"Paramètres manquants" });
 
-    const devis = await Devis.findOne({ $or: or }).sort({ createdAt: -1 });
+    const devis = await Devis
+      .findOne({ $or: or })
+      .select("numero createdAt")   // اللي تحتاجه فقط
+      .sort({ createdAt: -1 })
+      .lean();
 
-    // ⛏️ → 200 avec exists:false (évite les 404 côté front)
     if (!devis) {
-      return res.status(200).json({
-        success: false,
-        exists: false,
-        message: "Aucun devis pour cette demande",
-      });
+      return res.status(200).json({ success:false, exists:false, message:"Aucun devis pour cette demande" });
     }
 
-    const filename = `${devis.numero}.pdf`;
-    const pdf = `${ORIGIN}/files/devis/${filename}`; // 🔗 URL ABSOLUE
-
-    return res.json({
-      success: true,
-      exists: true,
-      devis: { _id: devis._id, numero: devis.numero },
-      pdf,
-    });
+    const pdf = `${ORIGIN}/files/devis/${devis.numero}.pdf`;
+    return res.json({ success:true, exists:true, devis:{ _id: devis._id, numero: devis.numero }, pdf });
   } catch (e) {
     console.error("getDevisByDemande:", e);
-    return res.status(500).json({ success: false, message: "Erreur serveur" });
+    return res.status(500).json({ success:false, message:"Erreur serveur" });
   }
 };
+

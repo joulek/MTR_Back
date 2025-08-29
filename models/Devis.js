@@ -49,10 +49,13 @@ const devisSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
-// فهارس للبحث السريع
-devisSchema.index({ demandeId: 1 });
-devisSchema.index({ demandeNumero: 1 });
-devisSchema.index({ "meta.demandes.id": 1 });
-devisSchema.index({ "meta.demandes.numero": 1 });
-
+devisSchema.index({ createdAt: -1 }, { name: "devis_createdAt_-1" });
+devisSchema.index({ demandeId: 1, createdAt: -1 }, { name: "devis_demandeId_createdAt" });
+devisSchema.index({ "meta.demandes.id": 1, createdAt: -1 }, { name: "devis_meta_demandes_id_createdAt" });
+devisSchema.index({ demandeNumero: 1, createdAt: -1 }, { name: "devis_demandeNumero_createdAt" });
+devisSchema.index({ "meta.demandeNumero": 1, createdAt: -1 }, { name: "devis_meta_demandeNumero_createdAt" });
+devisSchema.index({ "meta.demandes.numero": 1 }, { name: "devis_meta_demandes_numero_1" });
+devisSchema.index({ "meta.demandes.type": 1, createdAt: -1 }, { name: "devis_meta_demandes_type_createdAt" });
+devisSchema.index({ "client.nom": 1, createdAt: -1 }, { name: "devis_client_nom_createdAt" });
+// ملاحظة: عندك déjà unique + index على numero في تعريف الحقل، ما يلزمكش تضيفه مرّة أخرى
 export default mongoose.model("Devis", devisSchema);
