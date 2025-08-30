@@ -2,6 +2,7 @@
 import mongoose from "mongoose";
 
 const reclamationSchema = new mongoose.Schema({
+  numero: { type: String, required: true, unique: true, index: true }, // ex: REC2500001
   user: { 
     type: mongoose.Schema.Types.ObjectId, 
     ref: "User", 

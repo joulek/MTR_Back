@@ -1,16 +1,14 @@
 // controllers/reclamation.controller.js
-import Reclamation from "../models/reclamation.js";
+import Reclamation from "../models/reclamation.js"; // ⚠️ casse exacte
+import Counter from "../models/Counter.js";
 import { buildReclamationPDF } from "../utils/pdf.reclamation.js";
 import { makeTransport } from "../utils/mailer.js";
-import  auth  from "../middleware/auth.js";
 import mongoose from "mongoose";
+
 // petits helpers
 const toDate = (v) => (v ? new Date(v) : undefined);
 const toInt = (v) =>
   v === undefined || v === null || v === "" ? undefined : Number(v);
-
-
-
 
 export const createReclamation = async (req, res) => {
   try {
@@ -116,8 +114,25 @@ export const createReclamation = async (req, res) => {
           .json({ success: false, message: `"${p.filename}" dépasse 5 Mo.` });
     }
 
-    // 3) Sauvegarde rapide
+    // 3) Génération du numéro + sauvegarde
+    const year = new Date().getFullYear();
+    const yy = String(year).slice(-2);
+
+    // Incrémente le compteur pour l'année courante (reset annuel automatique)
+    const c = await Counter.findOneAndUpdate(
+      { _id: `reclamation:${year}` },
+      {
+        $inc: { seq: 1 },
+        $setOnInsert: { key: `reclamation-${yy}` }, // utile si tu exploits "key"
+      },
+      { upsert: true, new: true }
+    ).lean();
+
+    // Formate le numéro RYY##### (R25xxxxx)
+    const numero = `R${yy}${String(c.seq).padStart(5, "0")}`;
+
     const rec = await Reclamation.create({
+      numero, // ✅ auto-incrément
       user: req.user.id,
       commande,
       nature,
@@ -150,14 +165,6 @@ export const createReclamation = async (req, res) => {
         // PDF (Buffer)
         const pdfBuffer = await buildReclamationPDF(full);
 
-        // Stocker le PDF en base (optionnel)
-        await Reclamation.findByIdAndUpdate(
-          rec._id,
-          {
-            $set: { pdf: { data: pdfBuffer, contentType: "application/pdf" } },
-          },
-          { new: true }
-        );
         // Stocker le PDF en base
         await Reclamation.findByIdAndUpdate(
           rec._id,
@@ -181,7 +188,7 @@ export const createReclamation = async (req, res) => {
 
         const attachments = [
           {
-            filename: `reclamation-${rec._id}.pdf`,
+            filename: `reclamation-${full.numero}.pdf`, // ✅ cohérent avec numero
             content: pdfBuffer,
             contentType: "application/pdf",
           },
@@ -208,9 +215,10 @@ export const createReclamation = async (req, res) => {
         const toAdmin = process.env.ADMIN_EMAIL;
         const replyTo = full.user?.email;
 
-        const subject = `Réclamation ${rec._id} – ${fullName}`;
+        const subject = `Réclamation ${full.numero} – ${fullName}`; // ✅ utilise numero
         const text = `Nouvelle réclamation
 
+Numéro : ${full.numero}
 Document: ${full.commande?.typeDoc} ${full.commande?.numero}
 Nature  : ${full.nature}
 Attente : ${full.attente}
@@ -223,6 +231,7 @@ Adresse : ${full.user?.adresse || "-"}`;
 
         const html = `<h2>Nouvelle réclamation</h2>
 <ul>
+  <li><b>Numéro:</b> ${full.numero}</li>
   <li><b>Document:</b> ${full.commande?.typeDoc} ${full.commande?.numero}</li>
   <li><b>Nature:</b> ${full.nature}</li>
   <li><b>Attente:</b> ${full.attente}</li>
@@ -259,14 +268,15 @@ Adresse : ${full.user?.adresse || "-"}`;
   }
 };
 
+
 export const adminListReclamations = async (req, res) => {
   try {
     const items = await Reclamation.find({})
       .populate("user", "nom prenom email")
       .sort("-createdAt")
-      // on sélectionne juste ce qu'il faut (sans les buffers binaires énormes)
+      // ⬇️ ajoute "numero" et (optionnel) "commande.numero" si tu veux aussi le n° du doc source
       .select(
-        "user commande nature attente description createdAt " +
+        "numero user commande.typeDoc commande.numero nature attente description createdAt " +
         "piecesJointes.filename piecesJointes.mimetype " +
         "demandePdf pdf"
       )
@@ -275,15 +285,16 @@ export const adminListReclamations = async (req, res) => {
     const mapped = items.map((r) => {
       const hasPdf =
         !!(r?.demandePdf && r.demandePdf.data) ||
-        !!(r?.pdf && r.pdf.data); // couvre les 2 variantes
+        !!(r?.pdf && r.pdf.data);
 
       return {
         _id: r._id,
         client: r.user ? `${r.user.prenom || ""} ${r.user.nom || ""}`.trim() : "—",
-        email: r.user?.email || "",
         date: r.createdAt,
-        numero: r.commande?.numero || "",
+        numero: r.numero || "",                // ✅ maintenant il sera bien rempli (R25xxxxx)
         typeDoc: r.commande?.typeDoc || "",
+        // Optionnel: si tu veux afficher aussi le n° du document source:
+        // docNumero: r.commande?.numero || "",
         nature: r.nature,
         attente: r.attente,
         description: r.description || "",
@@ -301,6 +312,7 @@ export const adminListReclamations = async (req, res) => {
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
+
 
 // --- STREAM PDF (admin) ---
 export const streamReclamationPdf = async (req, res) => {

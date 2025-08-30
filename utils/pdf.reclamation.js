@@ -68,7 +68,7 @@ export async function buildReclamationPDF(rec) {
       const metaY = topY + 42;
       doc.font("Helvetica").fontSize(10).fillColor("#000")
         .text("Réf :", metaX, metaY)
-        .font("Helvetica-Bold").text(safe(rec?._id), metaX + 30, metaY)
+        .font("Helvetica-Bold").text(safe(rec?.numero), metaX + 30, metaY)
         .font("Helvetica").text("Date :", metaX, metaY + 16)
         .font("Helvetica-Bold").text(dateStr, metaX + 30, metaY + 16);
 
